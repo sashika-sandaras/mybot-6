@@ -1,14 +1,18 @@
-const { default: makeWASocket, useMultiFileAuthState, delay, DisconnectReason } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    delay, 
+    DisconnectReason // 👈 මෙතන D අකුර ලොකු අකුරක් විය යුතුයි
+} = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const zlib = require('zlib');
 const axios = require('axios');
 
 async function startBot() {
-    // --- Session Setup (Gifted-Tech පන්නයට) ---
+    // --- Session Setup ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     
-    // GitHub Environments වල තියෙන SESSION_ID එක ගමු
     const sessionData = process.env.SESSION_ID;
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -23,15 +27,16 @@ async function startBot() {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
+    
     const sock = makeWASocket({
         auth: state,
         logger: pino({ level: 'silent' }),
-        printQRInTerminal: true
+        // printQRInTerminal: true // ⚠️ deprecated නිසා අයින් කළා
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // --- මැසේජ් එකක් ආවම ක්‍රියාත්මක වන කොටස ---
+    // --- Message Handling ---
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
@@ -39,47 +44,44 @@ async function startBot() {
         const from = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
-        // .tv [ID] command එක පරීක්ෂා කිරීම
         if (text.startsWith('.tv')) {
             const fileId = text.split(' ')[1];
             
             if (!fileId) {
-                return await sock.sendMessage(from, { text: "⚠️ කරුණාකර Movie ID එකක් ලබා දෙන්න. \n\nඋදා: `.tv 12345`" });
+                return await sock.sendMessage(from, { text: "⚠️ Movie ID එකක් ලබා දෙන්න. උදා: `.tv 12345`" });
             }
 
-            await sock.sendMessage(from, { text: "⏳ ඔබගේ ඉල්ලීම පද්ධතියට ලැබුණා. කරුණාකර රැඳී සිටින්න..." });
+            await sock.sendMessage(from, { text: "⏳ Request එක ලැබුණා. පද්ධතියට යොමු කරමින්..." });
 
-            // ⚠️ මෙතනට ඔයාගේ අලුත්ම Google Script Web App URL එක දාන්න
-            const scriptUrl = "https://script.google.com/macros/s/AKfycbwNpeqtAn7AoIqdZN2Unp-ZC9yME3ZUljoFEh7Oj-1Ej-kWwHvJPOpUGBTPTVAT7AtF/exec";
+            // ⚠️ ඔයාගේ Google Script Web App URL එක මෙතනට දාන්න
+            const scriptUrl = "https://script.google.com/macros/s/AKfycbxt_uJxcAo5Q0YRFnJd8TxI1wBkwsMHDhvO1a8vt6z1uwkqLYVm7oQQEvJNHJBvnyme/exec";
 
             try {
-                // කෙලින්ම Google Sheet එකට දත්ත යැවීම
                 await axios.post(scriptUrl, {
                     fileId: fileId,
                     userJid: from
                 });
-
-                await sock.sendMessage(from, { text: "✅ සාර්ථකයි! වීඩියෝව ස්වයංක්‍රීයව එවනු ඇත." });
-                console.log(`🚀 Request Sent for ID: ${fileId}`);
-
+                await sock.sendMessage(from, { text: "✅ සාර්ථකයි! වීඩියෝව සූදානම් කර එවනු ඇත." });
             } catch (error) {
-                console.error("❌ Google Sheet Error:", error.message);
-                await sock.sendMessage(from, { text: "⚠️ පද්ධතියේ දෝෂයක්. පසුව උත්සාහ කරන්න." });
+                console.error("❌ Sheet Error:", error.message);
             }
         }
     });
 
-    // Connection එක විසන්ධි වුණොත් ආයේ Connect වීම
+    // --- Connection Update (Error එක නිවැරදි කළ තැන) ---
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== disconnectReason.loggedOut;
-            if (shouldReconnect) startBot();
+            // DisconnectReason.loggedOut ලෙස නිවැරදි කර ඇත
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                console.log('🔄 Connection closed, reconnecting...');
+                startBot();
+            }
         } else if (connection === 'open') {
             console.log('✅ Bot is Online!');
         }
     });
 }
 
-// Bot එක ආරම්භ කිරීම
 startBot();
