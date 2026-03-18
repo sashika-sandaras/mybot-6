@@ -8,12 +8,11 @@ const {
 const pino = require('pino');
 const fs = require('fs');
 const zlib = require('zlib');
-const axios = require('axios');
+const path = require('path');
 
 async function startBot() {
-    // --- 1. Session එක සකස් කිරීම ---
+    // Session Setup
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
-    
     const sessionData = process.env.SESSION_ID;
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -21,10 +20,7 @@ async function startBot() {
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-            console.log("✅ Session Loaded Successfully!");
-        } catch (e) {
-            console.log("❌ Session Decode Error:", e.message);
-        }
+        } catch (e) { console.log("Session Error"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -35,89 +31,63 @@ async function startBot() {
         version,
         logger: pino({ level: 'silent' }),
         browser: ["Ubuntu", "Chrome", "20.0.04"],
-        syncFullHistory: false,
-        markOnlineOnConnect: true,
-        connectTimeoutMs: 120000, // ලොකු ෆයිල් යැවීමට වෙලාව වැඩි කිරීම
+        connectTimeoutMs: 180000, // ලොකු ෆයිල් සඳහා වෙලාව තවත් වැඩි කළා
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // --- 2. වීඩියෝව Document එකක් ලෙස යැවීමේ Function එක ---
-    async function sendDownloadedVideo(sock) {
+    // --- ඕනෑම ෆයිල් එකක් Document එකක් ලෙස යැවීමේ Function එක ---
+    async function sendAsDocument(sock) {
         const userJid = process.env.USER_JID;
         const fileNameFile = 'filename.txt';
 
         if (fs.existsSync(fileNameFile)) {
-            const videoFileName = fs.readFileSync(fileNameFile, 'utf-8').trim();
+            const fileName = fs.readFileSync(fileNameFile, 'utf-8').trim();
             
-            if (fs.existsSync(videoFileName)) {
-                console.log(`🚀 Sending Original File: ${videoFileName} to ${userJid}`);
-                
+            if (fs.existsSync(fileName)) {
+                const extension = path.extname(fileName).toLowerCase();
+                let mime = 'application/octet-stream'; // Default mime type
+
+                // File Type එක අනුව Mimetype එක වෙනස් කිරීම
+                if (extension === '.mp4') mime = 'video/mp4';
+                else if (extension === '.mkv') mime = 'video/x-matroska';
+                else if (extension === '.srt') mime = 'text/plain';
+                else if (extension === '.vtt') mime = 'text/vtt';
+
+                console.log(`🚀 Sending Document: ${fileName} | Mime: ${mime}`);
+
                 try {
-                    // Document එකක් ලෙස යැවීම (Original format එකෙන්ම යයි)
                     await sock.sendMessage(userJid, { 
-                        document: { url: `./${videoFileName}` }, 
-                        fileName: videoFileName, 
-                        mimetype: 'video/x-matroska', // හෝ 'application/octet-stream'
-                        caption: `✅ ඔයා ඉල්ලපු වීඩියෝව මෙන්න!\n\n📂 *File Name:* ${videoFileName}\n🍿 *MFlix Hybrid Downloader*`
+                        document: { url: `./${fileName}` }, 
+                        fileName: fileName, 
+                        mimetype: mime,
+                        caption: `✅ *MFlix File Delivered!*\n\n📂 *Name:* ${fileName}\n🍿 *Powered by MFlix Engine*`
                     });
 
-                    console.log("✅ Document Sent Successfully!");
-                    
-                    // යැවූ පසු ෆයිල් එක මකා දැමීම
-                    fs.unlinkSync(videoFileName);
+                    console.log("✅ Sent Successfully!");
+
+                    // Cleanup - ෆයිල් එක යැවූ පසු මකා දැමීම
+                    fs.unlinkSync(fileName);
                     fs.unlinkSync(fileNameFile);
                     
-                    console.log("🎬 Task Finished. Shutting down...");
+                    // Task එක ඉවර නිසා Bot එක අහක් කිරීම
                     setTimeout(() => process.exit(0), 5000);
                 } catch (err) {
-                    console.error("❌ Error sending document:", err.message);
+                    console.error("❌ Send Error:", err.message);
                     process.exit(1);
                 }
-            } else {
-                console.log("❌ Video file not found on disk!");
-                process.exit(1);
             }
-        } else {
-            console.log("ℹ️ No pending video to send.");
         }
     }
 
-    // --- 3. Connection එකේ තත්ත්වය පරීක්ෂාව ---
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-        
-        if (connection === 'close') {
-            const statusCode = lastDisconnect.error?.output?.statusCode;
-            if (statusCode !== 405 && statusCode !== 401 && statusCode !== DisconnectReason.loggedOut) {
-                console.log('🔄 Reconnecting...');
-                startBot();
-            } else {
-                process.exit(1);
-            }
-        } else if (connection === 'open') {
-            console.log('✅ Bot is Online and Ready!');
+        const { connection } = update;
+        if (connection === 'open') {
+            console.log('✅ Connected! Preparing to send document...');
             await delay(5000);
-            await sendDownloadedVideo(sock);
-        }
-    });
-
-    // --- 4. Commands (.tv) ---
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-        const from = msg.key.remoteJid;
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-
-        if (text.startsWith('.tv')) {
-            const fileId = text.split(' ')[1];
-            if (!fileId) return;
-            await sock.sendMessage(from, { text: "⏳ Request එක ලැබුණා. පද්ධතියට යොමු කරමින්..." });
-            const scriptUrl = "https://script.google.com/macros/s/AKfycbya5zRhzNl4DKAK0Bz42IKwo2yMppXGxjD0e0vuUm_HqakOwQKHjYq676BhsxUrVcDL/exec";
-            try {
-                await axios.post(scriptUrl, { fileId: fileId, userJid: from });
-                await sock.sendMessage(from, { text: "✅ සාර්ථකයි! වීඩියෝව සූදානම් කර එවනු ඇත." });
-            } catch (e) { console.error(e.message); }
+            await sendAsDocument(sock);
+        } else if (connection === 'close') {
+            startBot();
         }
     });
 }
