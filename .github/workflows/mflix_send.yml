@@ -1,75 +1,41 @@
-name: Send Movie File (Test)
-
-on:
-  workflow_dispatch:
-    inputs:
-      file_id:
-        description: 'වීඩියෝ එකේ ID එක (GDrive හෝ VOE)'
-        required: true
-        default: '4ua1l9lragrg'
-      user_jid:
-        description: 'ඔයාගේ WhatsApp Number එක'
-        required: true
-        default: '94766886046@s.whatsapp.net'
-
-jobs:
-  send:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '20'
-
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install Dependencies
-        run: |
-          pip install requests
-          npm install @whiskeysockets/baileys pino axios qrcode-terminal
-
-      - name: Run Script
+- name: Run Script
         env:
           VOE_KEY: ${{ secrets.VOE_KEY }}
           SESSION_ID: ${{ secrets.SESSION_ID }}
           FILE_ID: ${{ github.event.inputs.file_id }}
           USER_JID: ${{ github.event.inputs.user_jid }}
         run: |
-          # Secrets තියෙනවද බලන Debugging පියවරක්
-          if [ -z "$VOE_KEY" ]; then echo "Error: VOE_KEY is missing in Secrets"; exit 1; fi
-          
-          # Python Script එක වෙනම file එකකට ලියනවා
           cat <<'EOF' > downloader.py
           import os, requests, sys
-          voe_key = os.getenv('VOE_KEY')
           file_id = os.getenv('FILE_ID')
+          voe_key = os.getenv('VOE_KEY')
           url = None
           
-          try:
-              if len(file_id) > 20:
-                  url = f"https://drive.google.com/uc?export=download&id={file_id}"
-              else:
-                  api_url = f"https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}"
-                  r = requests.get(api_url).json()
-                  url = r.get('result', {}).get('direct_url')
+          headers = {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+          }
+
+          if len(file_id) > 20: # GDrive ID
+              url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
+          else: # VOE ID
+              api_url = f"https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}"
+              r = requests.get(api_url).json()
+              url = r.get('result', {}).get('direct_url')
+
+          if url:
+              print(f"Downloading from: {url}")
+              r = requests.get(url, headers=headers, stream=True, allow_redirects=True)
+              with open('movie_mflix.mp4', 'wb') as f:
+                  for chunk in r.iter_content(chunk_size=1024*1024): # 1MB chunks
+                      if chunk: f.write(chunk)
               
-              if url:
-                  print(f"Downloading...")
-                  with requests.get(url, stream=True) as r:
-                      with open('movie_mflix.mp4', 'wb') as f:
-                          for chunk in r.iter_content(chunk_size=8192): f.write(chunk)
-                  print('Download Complete!')
-              else:
-                  print('Error: Could not find download URL')
+              size = os.path.getsize('movie_mflix.mp4')
+              print(f"Download Complete! Size: {size / (1024*1024):.2 dream} MB")
+              if size < 10000: # 10KB වලට වඩා අඩු නම් ඒක වීඩියෝ එකක් නෙවෙයි
+                  print("Error: File is too small, likely an error page.")
                   sys.exit(1)
-          except Exception as e:
-              print(f"Error: {e}")
+          else:
+              print("Error: URL not found")
               sys.exit(1)
           EOF
           
