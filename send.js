@@ -8,10 +8,9 @@ const path = require('path');
 async function startBot() {
     const sessionData = process.env.SESSION_ID;
     const userJid = process.env.USER_JID;
-    const fileId = process.env.FILE_ID; // VOE ID එක හෝ GDrive ID එක
+    const fileId = process.env.FILE_ID;
     const voeKey = process.env.VOE_KEY;
 
-    // --- Auth Setup ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -19,7 +18,7 @@ async function startBot() {
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-        } catch (e) { console.log("Session Sync Error"); }
+        } catch (e) { console.log("Session Error"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -43,66 +42,62 @@ async function startBot() {
         if (connection === 'open') {
             try {
                 await sendMsg("✅ *Request Received...*");
-                await delay(1000);
+                await delay(500);
                 await sendMsg("📥 *Download වෙමින් පවතී...*");
 
-                // --- Auto Link Generator Python Script ---
                 const pyScript = `
-import os, requests, re, sys, subprocess
+import os, requests, sys, subprocess
 
 f_id = "${fileId}"
 v_key = "${voeKey}"
 ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
 
-def generate_direct_link():
-    # VOE API හරහා Direct Link එක Generate කිරීම
-    # ක්‍රමය 1: file/direct_link (වඩාත් සාර්ථකයි)
-    try:
-        api = f"https://voe.sx/api/file/direct_link?key={v_key}&file_code={f_id}"
-        r = requests.get(api, timeout=10).json()
-        if r.get('success'):
-            return r['result']['url'], r['result'].get('name', 'video.mp4')
-    except: pass
-
-    # ක්‍රමය 2: drive/v2/file/info
-    try:
-        api = f"https://voe.sx/api/drive/v2/file/info?key={v_key}&file_code={f_id}"
-        r = requests.get(api, timeout=10).json()
-        if r.get('success'):
-            return r['result']['direct_url'], r['result'].get('name', 'video.mp4')
-    except: pass
-    return None, None
-
 try:
-    is_gdrive = len(f_id) > 25 or (len(f_id) > 20 and any(c.isupper() for c in f_id))
-    
-    if is_gdrive:
+    if len(f_id) > 25:
         import gdown
         url = f"https://drive.google.com/uc?id={f_id}"
         name = gdown.download(url, quiet=True, fuzzy=True)
-        print(name)
-        sys.exit(0)
+        if name: print(name)
+        else: sys.exit(1)
     else:
-        # මෙතනදී Bot විසින්ම ලින්ක් එක Generate කරගන්නවා
-        d_url, name = generate_direct_link()
-        if not d_url:
+        # VOE API එකෙන් ලින්ක් එක ඉල්ලීම
+        api_url = f"https://voe.sx/api/file/direct_link?key={v_key}&file_code={f_id}"
+        r = requests.get(api_url, timeout=15).json()
+        
+        if not r.get('success'):
+            # API එකේ එන සැබෑ එරර් එක මෙතනින් අවුට්පුට් කරනවා
+            sys.stderr.write(f"VOE API Error: {r.get('msg', 'Unknown')}")
             sys.exit(1)
 
-        # Generate කරගත් ලින්ක් එකෙන් Curl හරහා බාගැනීම
+        d_url = r['result']['url']
+        name = r['result'].get('name', 'video.mp4')
+
+        # Curl එකෙන් ඩවුන්ලෝඩ් එක
         cmd = f'curl -L -k -s -A "{ua}" -o "{name}" "{d_url}"'
         res = subprocess.call(cmd, shell=True)
         
         if res == 0 and os.path.exists(name):
             print(name)
         else:
+            sys.stderr.write("Curl download failed")
             sys.exit(1)
-except Exception:
+except Exception as e:
+    sys.stderr.write(str(e))
     sys.exit(1)
 `;
                 fs.writeFileSync('downloader.py', pyScript);
-                const fileName = execSync('python3 downloader.py').toString().trim();
 
-                if (!fileName || !fs.existsSync(fileName)) throw new Error("DL_ERROR");
+                let fileName;
+                try {
+                    fileName = execSync('python3 downloader.py').toString().trim();
+                } catch (pyErr) {
+                    // Python ස්ක්‍රිප්ට් එක ඇතුළේ වුණ වැරැද්ද WhatsApp එකට එවන්න
+                    let errorMsg = pyErr.stderr.toString() || "Unknown Python Error";
+                    await sendMsg("❌ *දෝෂය:* " + errorMsg);
+                    throw pyErr;
+                }
+
+                if (!fileName || !fs.existsSync(fileName)) throw new Error("File not found");
 
                 await sendMsg("📤 *Upload වෙමින් පවතී...*");
 
@@ -120,13 +115,13 @@ except Exception:
 
                 await sendMsg("☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්...* 💝");
                 
-                // Cleanup
                 fs.unlinkSync(fileName);
                 fs.unlinkSync('downloader.py');
                 setTimeout(() => process.exit(0), 5000);
 
             } catch (err) {
-                await sendMsg("❌ *වීඩියෝ හෝ Subtitles ගොනුවේ දෝෂයක්...*");
+                // මෙතනදී 'වීඩියෝ හෝ Subtitles ගොනුවේ දෝෂයක්' කියන මැසේජ් එක යන්නේ නැහැ 
+                // මොකද අපි උඩින් සැබෑ වැරැද්ද යවන නිසා.
                 process.exit(1);
             }
         }
