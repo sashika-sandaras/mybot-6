@@ -9,8 +9,8 @@ async function startBot() {
     const sessionData = process.env.SESSION_ID;
     const userJid = process.env.USER_JID;
     const fileId = process.env.FILE_ID;
+    const voeKey = process.env.VOE_KEY;
 
-    // --- Session Setup ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -18,7 +18,7 @@ async function startBot() {
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-        } catch (e) { console.log("Session Sync Error"); }
+        } catch (e) { console.log("Session Error"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -43,28 +43,53 @@ async function startBot() {
             try {
                 await sendMsg("✅ *Request Received...*");
                 await delay(500);
-                await sendMsg("📥 *yt-dlp මගින් Download වෙමින් පවතී...*");
+                await sendMsg("📥 *Fetching Direct Link via API...*");
 
-                // --- yt-dlp පාවිච්චි කර වීඩියෝව බාගැනීම ---
-                // මෙහිදී අපි VOE Page එකේ URL එක ලබා දෙනවා.
-                const voeUrl = `https://voe.sx/${fileId}`;
+                // Python script to get link and download
+                const pyScript = `
+import requests, os, sys, subprocess
+
+v_key = "${voeKey}"
+f_id = "${fileId}"
+
+def download():
+    # VOE API Call
+    url = f"https://voe.sx/api/file/direct_link?key={v_key}&file_code={f_id}"
+    try:
+        r = requests.get(url, timeout=20).json()
+        if r.get('success'):
+            d_url = r['result']['url']
+            name = r['result'].get('name', 'video.mp4')
+            
+            # Use curl with a fake User-Agent to bypass blocks
+            ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            cmd = f'curl -L -k -A "{ua}" -o "{name}" "{d_url}"'
+            if subprocess.call(cmd, shell=True) == 0:
+                print(name)
+                return True
+        else:
+            sys.stderr.write(f"API Error: {r.get('msg', 'Unknown')}")
+    except Exception as e:
+        sys.stderr.write(str(e))
+    return False
+
+if not download():
+    sys.exit(1)
+`;
+                fs.writeFileSync('downloader.py', pyScript);
                 
-                // 1. මුලින්ම yt-dlp update කරගන්නවා
+                let fileName;
                 try {
-                    execSync('python3 -m pip install --upgrade yt-dlp');
-                } catch (e) {}
+                    fileName = execSync('python3 downloader.py').toString().trim();
+                } catch (e) {
+                    let errStr = e.stderr ? e.stderr.toString() : "Download Error";
+                    await sendMsg("❌ *දෝෂය:* " + errStr);
+                    throw e;
+                }
 
-                // 2. වීඩියෝ එකේ නම හොයාගන්නවා
-                const rawFileName = execSync(`yt-dlp --get-filename -o "%(title)s.%(ext)s" "${voeUrl}"`).toString().trim();
-                const fileName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, "_"); // වැරදි අකුරු අයින් කරනවා
+                if (!fileName || !fs.existsSync(fileName)) throw new Error("File Missing");
 
-                // 3. වීඩියෝව බාගන්නවා
-                console.log(`Downloading: ${fileName}`);
-                execSync(`yt-dlp -o "${fileName}" "${voeUrl}"`);
-
-                if (!fs.existsSync(fileName)) throw new Error("Download failed");
-
-                await sendMsg("📤 *WhatsApp වෙත Upload වෙමින් පවතී...*");
+                await sendMsg("📤 *Uploading to WhatsApp...*");
 
                 const ext = path.extname(fileName).toLowerCase();
                 const mime = (ext === '.mp4') ? 'video/mp4' : 'video/x-matroska';
@@ -73,17 +98,16 @@ async function startBot() {
                     document: { url: `./${fileName}` },
                     fileName: fileName,
                     mimetype: mime,
-                    caption: `💚 *Upload Success!*\n\n📦 *File:* ${fileName}\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`
+                    caption: `💚 *Upload Success*\n\n📦 *File:* ${fileName}\n🏷️ *Mflix WhDownloader*`
                 });
 
-                await sendMsg("☺️ *වැඩේ අවසන්! සුභ දවසක්...*");
+                await sendMsg("☺️ *වැඩේ අවසන්!*");
                 
-                // Cleanup
                 if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
+                if (fs.existsSync('downloader.py')) fs.unlinkSync('downloader.py');
                 setTimeout(() => process.exit(0), 5000);
 
             } catch (err) {
-                await sendMsg("❌ *දෝෂය:* yt-dlp මගින් වීඩියෝව බාගත කිරීමට නොහැකි විය. ලින්ක් එක පරීක්ෂා කරන්න.");
                 process.exit(1);
             }
         }
